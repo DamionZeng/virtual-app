@@ -11,4 +11,12 @@
     <string name="new_user">新的用户</string>
     <string name="add_app">添加App</string>
     <string name="desktop">桌面</string>
+
+    <!-- 虚拟定位：百度地图 -->
+    <string name="choose_location_title">选择位置</string>
+    <string name="baidu_map_ak_missing">请先在 res/values/strings.xml 中配置百度地图 AK（baidu_map_ak）</string>
+    <string name="baidu_map_load_failed">地图加载失败，请检查网络或百度地图 AK 配置</string>
+    <string name="baidu_map_save_failed">设置虚拟定位失败</string>
+    <!-- 在百度地图开放平台申请 Android/浏览器端 AK 后替换下面的值 -->
+    <string name="baidu_map_ak" translatable="false">4JSuqkJ9KUGwOQgGSz7RfRHPGSMdohVA</string>
 </resources>

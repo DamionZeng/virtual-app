@@ -7,6 +7,9 @@
     <!--外部存储的读权限-->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 百度地图 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- SandHook -->
     <uses-sdk tools:overrideLibrary="com.swift.sandhook.lib, com.swift.sandhook.xposedcompat"/>
 
@@ -39,7 +42,7 @@
         android:requestLegacyExternalStorage="true"
         android:networkSecurityConfig="@xml/network_security"
         android:resizeableActivity="true"
-        android:name="com.carlos.common.App"
+        android:name="com.carlos.common.AppEx"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
