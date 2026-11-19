@@ -10,12 +10,15 @@ import com.lody.virtual.client.ipc.VLocationManager;
 import com.lody.virtual.os.VUserHandle;
 import com.lody.virtual.remote.vloc.VLocation;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -35,19 +38,24 @@ public final class TslShadowInstaller {
     private static final String ASSET_DEX = "tsl_shadow.dex";
 
     private static final AtomicBoolean sInstalled = new AtomicBoolean(false);
+    /** 本进程是否已经把影子 dex 插入加载器，插入过就不再重复插入 */
+    private static final AtomicBoolean sInjected = new AtomicBoolean(false);
 
     private static long sLastCheck;
 
     private TslShadowInstaller() {
     }
 
-    public static void tryInstall() {
-        if (sInstalled.get()) {
-            return;
+    /**
+     * @return true 表示本进程不需要再调用（已安装，或无望安装），调用方可结束轮询
+     */
+    public static boolean tryInstall() {
+        if (sInstalled.get() || sInjected.get()) {
+            return true;
         }
         long now = SystemClock.elapsedRealtime();
         if (now - sLastCheck < 1500) {
-            return;
+            return false;
         }
         sLastCheck = now;
 
@@ -55,35 +63,37 @@ public final class TslShadowInstaller {
         try {
             appLoader = VClient.get().getClassLoader();
         } catch (Throwable t) {
-            return;
+            return false;
         }
         if (appLoader == null) {
-            return;
+            return false;
         }
         VLocation location = virtualLocation();
         if (location == null) {
-            return;
+            return false;
         }
         synchronized (TslShadowInstaller.class) {
-            if (sInstalled.get()) {
-                return;
+            if (sInstalled.get() || sInjected.get()) {
+                return true;
             }
             try {
                 Context context = VirtualCore.get().getContext();
                 if (context == null) {
-                    return;
+                    return false;
                 }
                 File dex = extractDex(context);
                 if (dex == null) {
                     Log.e(TAG, "shadow dex not found");
-                    return;
+                    return false;
                 }
                 inject(appLoader, dex, context);
+                // 插入后就不再重复插入，否则 dexElements 会不断增长
+                sInjected.set(true);
                 Class<?> shadowClass = Class.forName(CLS_MANAGER, true, appLoader);
                 Object mark = shadowClass.getField("SHADOW_MARK").get(null);
                 if (!"virtual".equals(mark)) {
                     Log.e(TAG, "unexpected shadow mark " + mark);
-                    return;
+                    return true;
                 }
                 push(shadowClass, location);
                 sInstalled.set(true);
@@ -92,8 +102,10 @@ public final class TslShadowInstaller {
                         + " loader=" + appLoader.getClass().getName()
                         + " paths=" + dexPaths(appLoader)
                         + " location=" + location);
+                return true;
             } catch (Throwable t) {
                 Log.e(TAG, "install failed: " + t, t);
+                return sInjected.get();
             }
         }
     }
@@ -115,26 +127,98 @@ public final class TslShadowInstaller {
         }
     }
 
+    /**
+     * 解压影子 dex。
+     *
+     * 注意：绝不能直接覆盖已被其它进程 mmap 的旧文件——副本进程（企业微信有多个
+     * 进程）会各自解压到同一路径，若在这里 FileOutputStream 截断文件，正在使用
+     * 该 dex 的进程会因映射页失效触发 SIGBUS(BUS_ADRERR) 原生崩溃，表现为卡在
+     * 开屏页。这里改为“内容相同则复用，否则写临时文件后原子改名”。
+     */
     private static File extractDex(Context context) {
         File dir = new File(context.getFilesDir(), "tsl_shadow");
         if (!dir.exists() && !dir.mkdirs()) {
             return null;
         }
         File target = new File(dir, ASSET_DEX);
+        byte[] data = readAsset(context, ASSET_DEX);
+        if (data == null || data.length == 0) {
+            return null;
+        }
+        if (target.length() == data.length && Arrays.equals(data, readAll(target))) {
+            return target;
+        }
+        File tmp = new File(dir, ASSET_DEX + "." + android.os.Process.myPid() + ".tmp");
+        FileOutputStream output = null;
         try {
-            InputStream input = context.getAssets().open(ASSET_DEX);
-            FileOutputStream output = new FileOutputStream(target);
+            output = new FileOutputStream(tmp);
+            output.write(data);
+            output.flush();
+            output.getFD().sync();
+            output.close();
+            output = null;
+            if (tmp.renameTo(target)) {
+                return target;
+            }
+            tmp.delete();
+            return target.length() > 0 ? target : null;
+        } catch (Throwable t) {
+            Log.e(TAG, "extract dex failed: " + t);
+            if (output != null) {
+                try {
+                    output.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            tmp.delete();
+            return null;
+        }
+    }
+
+    private static byte[] readAsset(Context context, String name) {
+        InputStream input = null;
+        try {
+            input = context.getAssets().open(name);
+            ByteArrayOutputStream out = new ByteArrayOutputStream(8192);
             byte[] buffer = new byte[8192];
             int count;
             while ((count = input.read(buffer)) > 0) {
-                output.write(buffer, 0, count);
+                out.write(buffer, 0, count);
             }
-            output.close();
-            input.close();
-            return target;
+            return out.toByteArray();
         } catch (Throwable t) {
-            Log.e(TAG, "extract dex failed: " + t);
+            Log.e(TAG, "read asset failed: " + t);
             return null;
+        } finally {
+            if (input != null) {
+                try {
+                    input.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    private static byte[] readAll(File file) {
+        FileInputStream input = null;
+        try {
+            input = new FileInputStream(file);
+            ByteArrayOutputStream out = new ByteArrayOutputStream((int) file.length());
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) > 0) {
+                out.write(buffer, 0, count);
+            }
+            return out.toByteArray();
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            if (input != null) {
+                try {
+                    input.close();
+                } catch (Throwable ignored) {
+                }
+            }
         }
     }
 

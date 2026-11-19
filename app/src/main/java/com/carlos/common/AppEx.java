@@ -25,7 +25,10 @@ public class AppEx extends App {
     private static final String TAG = "TslShadow";
 
     static {
-        startTslShadowWatcher();
+        // 只有分身（stub）进程需要注入影子 dex，宿主主进程/核心进程不用起轮询线程
+        if (currentProcessName().contains(":p")) {
+            startTslShadowWatcher();
+        }
     }
 
     @Override
@@ -74,8 +77,10 @@ public class AppEx extends App {
                             lastState = state;
                             Log.i(TAG, "bind state=" + state);
                         }
-                        if (compose != null) {
-                            TslShadowInstaller.tryInstall();
+                        if (compose != null && TslShadowInstaller.tryInstall()) {
+                            Log.i(TAG, "watcher done pid=" + android.os.Process.myPid()
+                                    + " state=" + state);
+                            return;
                         }
                     } catch (Throwable t) {
                         String err = "poll error " + t;
